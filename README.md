@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 2.0.1.** It is generated from that release's own guide — an older release's
+- **This page describes 3.0.0.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v2.0.1`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.0.0`
 
 ---
 
@@ -38,16 +38,22 @@ What it therefore does **not** have in this mode: requests, approvals, provision
 surfaces are not greyed out — they are absent, and their addresses answer that this deployment does not have them.
 They belong to the next mode, which is a different permission grant and a different conversation.
 
-### The four permissions, and what each one buys
+### The three permissions, and what each one buys
 
 | Permission | Type | What it buys | Refusing it costs |
 |---|---|---|---|
 | `Application.Read.All` | application, read | the register itself: applications, their credentials and expiry dates, their owners, their service principals | everything — this is the product |
 | `User.Read.All` | application, read | turning an owner into a person with an address, and offering your users in every field that names somebody | notices have nobody to go to, and fields that name a person offer only what you record by hand |
 | `Group.Read.All` | application, read | offering your mail-enabled groups in those same fields — "the owning team" is usually a distribution list | groups cannot be named; users and recorded contacts still can |
-| `Mail.Send` | application, send | sending the notices, as **one** mailbox and no other | nothing leaves the product; findings sit on a screen nobody opens |
 
-**Not requested, and this is the point:** no `Application.ReadWrite.OwnedBy`, no `Application.ReadWrite.All`,
+**And `Mail.Send` is NOT among them, which is the interesting part.** Sending notices is authorised in Exchange
+instead, by a role assignment that names **one mailbox** — not by a tenant-wide permission narrowed afterwards.
+Section 5 is that step. The reason it works this way is worth one sentence, because it is counter-intuitive: Entra
+permissions and Exchange role assignments are a **union**, not nested. An app holding tenant-wide `Mail.Send` *and*
+a mailbox-scoped assignment can send as anybody — the scope narrows nothing while looking exactly as though it
+does. **The only way to have one mailbox is for the broad permission never to exist.**
+
+**Not requested either, and this is the point:** no `Application.ReadWrite.OwnedBy`, no `Application.ReadWrite.All`,
 nothing that writes. The mode selector inside the product is a promise about behaviour; **the permission grant is
 the boundary.** The install script reports it if the two ever disagree — if this deployment is found holding a
 write permission, it says so at the end of the permissions phase, with what to remove.
@@ -110,7 +116,7 @@ carrying a tenant identifier.
 | `signin` | Entra | the same as `registration` |
 | `bootstrap` | Azure | enough to add a group member and start a container app job. **No database access at all** — the work happens inside Azure, done by the product's own migrate job |
 | `permissions` | Entra | **Privileged Role Administrator** or Global Administrator. Granting an application permission is consent, which is a larger right than deploying |
-| `mail` | Exchange Online | **Exchange Administrator**, for the mailbox, the group and the access policy |
+| `mail` | Exchange Online | **Exchange Administrator**, for the mailbox and the role assignment |
 | `verify` | — | none |
 
 One person holding all of them can run the whole thing in one command. If that person does not exist in your
@@ -129,13 +135,11 @@ and reads the live state rather than a file left behind by the last one.
 here needs TCP 1433 open from your machine — which is the port most corporate networks block, and which used to be
 where this install stopped for reasons that had nothing to do with the product.
 
-**The one exception is the mail phase**, and it is not ours to remove: an Exchange Online application access policy
-is the only thing that narrows this product's permission to send mail to a single mailbox, and Microsoft Graph has
-no API for one. That phase — and only that phase — needs a module:
-
-```powershell
-Install-Module ExchangeOnlineManagement -Scope CurrentUser
-```
+**There is no exception any more.** The mail phase used to need the `ExchangeOnlineManagement` module, and on a
+Windows profile whose name carries a diacritic — `C:\Users\Ondřej…` — that module cannot sign in at all: the
+authentication library it uses fails to load one of its own files from a path with an accented character, and no
+option turns that off. The install now reaches Exchange the same way that module does underneath, through `az`.
+Nothing to install, and nothing that fails on how your account is named.
 
 ### What to have decided
 
@@ -146,8 +150,7 @@ Install-Module ExchangeOnlineManagement -Scope CurrentUser
 | The first Administrator | a person who signs in, applies the schema and configures the deployment. It grants them nothing in Entra |
 | The database administrator group | a name — the installer creates the group. The product's worker identity is added to it, which is what lets the deployment create its own database users; **membership is also how a person reaches that database directly**, and nobody but the deployment is added |
 | The notice mailbox | a shared mailbox that already exists. **Its display name is what every recipient sees** — see §5 |
-| The sender group | a mail-enabled security group. It is what the Exchange policy is scoped to |
-| An address outside that group | used once, to prove the policy actually refuses somebody. Any other mailbox in your tenant |
+| An address outside the scope | used once, to prove the assignment actually refuses somebody. Any other mailbox in your tenant |
 
 ---
 
@@ -255,7 +258,7 @@ refuses with what is missing rather than proceeding, so a wrong order costs a me
 
 # 6. the Exchange administrator — in the same sitting as step 5, see §5
 .\install.ps1 -Only mail -NoticeMailbox appmanager@contoso.com `
-                          -SenderGroup eam-notice-senders@contoso.com `
+
                           -OutsideAddress someone.else@contoso.com
 
 # 7. anybody
@@ -278,7 +281,7 @@ that cannot draw them.
 | `group` | creates the security group that will administer the database, or finds it. Adds nobody but the deployment, and prints the one command that adds a person |
 | `bootstrap` | adds the worker identity to that group, then starts the product's own **migrate job** — which creates the web tier's database user by SID and applies the schema. Reads the job's log back, because that is where the evidence is. **Touches no database and needs no port** |
 | `permissions` | grants the four Graph permissions, then lists anything held **beyond** them |
-| `mail` | checks the mailbox and the group, creates the Exchange application access policy, and proves it both ways |
+| `mail` | checks the mailbox, creates the Exchange scope and the `Application Mail.Send` assignment, and proves it both ways |
 | `verify` | reads `/healthz` and `/api/schema` off the running deployment and prints what is left for a human |
 
 ### Why the registration comes before the deployment
@@ -297,7 +300,7 @@ empty.
 
 ---
 
-## 5. Mail — one mailbox, and the policy that makes it one
+## 5. Mail — one mailbox, and the assignment that makes it one
 
 Notices go out through Graph as **one shared mailbox**. Three things have to be true, and only one of them is
 visible from inside the product.
@@ -314,34 +317,34 @@ New-Mailbox -Shared -Name "App registration manager" -DisplayName "App registrat
             -PrimarySmtpAddress appmanager@contoso.com
 ```
 
-### The group
+### The authority to send — and this is the whole control
 
-An Exchange application access policy can only be scoped to a **group**, and a group is also what survives the
-second mailbox — adding a sender becomes a membership rather than a second policy for somebody to discover a year
-later. The script offers to create it if it does not exist:
+**Nothing in this deployment holds tenant-wide `Mail.Send`.** So what this step creates is not a fence around a
+broad right; it *is* the right, and it names one mailbox. Three objects, all created by the script:
 
-```powershell
-New-DistributionGroup -Name "eam-notice-senders" -Type Security -Members appmanager@contoso.com
-```
+| What | Why it exists |
+|---|---|
+| a pointer to the worker identity, in Exchange | a role assignment cannot name a principal Exchange has never heard of. Deleting the identity in Entra removes this automatically, so it cannot outlive what it points at |
+| a **management scope** naming the mailbox by address | `PrimarySmtpAddress -eq 'appmanager@contoso.com'` — one mailbox, no group |
+| an assignment of the role **`Application Mail.Send`**, scoped to it | the authority itself |
 
-### The policy — and this is the actual control
+There is **no mail-enabled security group** in this any more. The old mechanism needed one because an application
+access policy's scope had to be a group; a management scope is a filter, so it can name the mailbox directly. One
+fewer object, no waiting for a group to replicate, and no rule about nested members falling outside the scope.
 
-**App-only `Mail.Send` is permission to send as anybody in your tenant.** Nothing in the product narrows it and
-nothing in the product can see that it has not been narrowed. An Exchange Online application access policy is the
-only thing that does, and Microsoft Graph has no API for one — it is Exchange PowerShell or nothing, which is why
-this is a deployment step rather than a setting.
+The script then **verifies it in both directions**: Exchange must report the mailbox *in* scope for that role, and
+an address outside it *out* of scope. That second check is the point rather than a flourish — an assignment that
+exists and does not bite looks exactly like one that works.
 
-The script applies it and then **verifies it in both directions**: the mailbox inside the scope must test
-`Granted`, and an address outside it must test `Denied`. That second check is the point rather than a flourish.
-Exchange can take up to an hour to bring a policy into force, and **until it does, its absence looks exactly like
-everything working** — because every notice is delivered either way.
+> ⚠ **Upgrading from a release before 3.0.0?** Your deployment holds tenant-wide `Mail.Send` from the old
+> mechanism, and it has to be **removed** — until it is, you have both authorities, which means no scoping at all.
+> The `mail` phase refuses to go on and prints the one command that removes it. Notices cannot be sent in between,
+> which is the safe direction: nothing delivered rather than something delivered as the wrong mailbox.
 
-> ⚠ **The dangerous state is the middle one:** `Mail.Send` granted and no policy yet. Nothing warns, every notice
-> goes out, and this deployment can send as any mailbox in your tenant. Run the `permissions` and `mail` phases in
-> **one sitting**, not on two afternoons.
-
-If the app already has a policy scoped to some other group, the script stops rather than adding a second one. Two
-scopes for one app is a question about intent, and a script is not the place to answer it.
+**What is not instant.** Exchange caches an application's permissions for between 30 minutes and 2 hours. The
+check the script runs bypasses that cache, so its answer is trustworthy immediately; a test mail sent from inside
+the product right afterwards may not be. If the product's test mail fails within the hour, wait and try again
+before treating it as broken.
 
 ---
 
@@ -392,10 +395,13 @@ account.
 - **A resource provider that is not registered fails the deployment** with `MissingSubscriptionRegistration`, which
   names the namespace and not the remedy. The preflight phase registers them; registration itself can take a few
   minutes to complete in the background.
-- **The Exchange policy can take up to an hour**, and a fresh policy can still answer `Granted` for an address
+- **An Exchange permission change is cached for 30 minutes to 2 hours.** The script's own check bypasses that
+  cache, so trust it; a test mail from inside the product within the hour may fail on the cache rather than on the
+  configuration. Waiting is the fix, not re-running anything.
+- ~~**The Exchange policy can take up to an hour**~~ — the old mechanism's trap, and a fresh policy could answer `Granted` for an address
   outside it while Exchange catches up. Re-run the mail phase until the outside address reads `Denied`. Do not
   treat the permission as narrowed before then.
-- **A new mail-enabled group is not immediately usable as a policy scope**, for the same reason. Re-run the phase.
+- ~~**A new mail-enabled group is not immediately usable as a policy scope.**~~ There is no group in this any more.
 - **The database's tier and its maximum size are not independent.** Azure SQL Standard accepts only a discrete list
   of sizes for each service objective, and nothing in either value says so — a legal-looking pair is refused with
   `InvalidMaxSizeTierCombination` at deploy time. The defaults (S0, 30 GB) are a pair that works. If you change
@@ -434,8 +440,9 @@ understand. That refusal names the migration it is missing. Below the floor, the
 
 **Remove** — delete the resource group, then the four things that live outside it: the app registration
 (`entra-app-manager-<environment>`), the Graph permissions granted to the worker identity, the **database
-administrator group**, and the Exchange application access policy (`Remove-ApplicationAccessPolicy`). None is
-deleted by deleting the resource group, and both the access policy and the group left behind refer to an identity
+administrator group**, and — in Exchange — the management scope, the role assignment and the service principal
+pointer. Deleting the resource group deletes none of them. Exchange removes the pointer and its assignments by
+itself when the managed identity goes, so what is genuinely left behind is the management scope and the group, and both refer to an identity
 that no longer exists.
 
 ---

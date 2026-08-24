@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 1.0.0.** It is generated from that release's own guide — an older release's
+- **This page describes 2.0.0.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v1.0.0`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v2.0.0`
 
 ---
 
@@ -79,6 +79,11 @@ One resource group, `rg-eam-prod` (the names come from `-Workload` and `-Environ
 one web replica. Everything else is small or usage-based. Price them for your region in the Azure pricing
 calculator before you commit — this document deliberately quotes no figure it cannot keep current.
 
+**One thing is created outside your subscription**: a **security group in your directory**, whose members are the
+only people who can connect to this deployment's database directly. The product's own worker identity is a member,
+which is what lets the deployment create its database users without anybody reaching the server from outside Azure.
+The installer adds nobody else.
+
 **No secret exists in a deployed stamp.** The database, the queues, the key ring and Microsoft Graph are all
 reached with managed identity, and the sign-in registration authenticates with a federated credential rather than
 a client secret. The application refuses to start if a connection string ever arrives with a password in it.
@@ -101,8 +106,9 @@ carrying a tenant identifier.
 | `preflight` | Azure | Reader, plus **Contributor** if a resource provider still needs registering (a fresh subscription usually needs `Microsoft.App` and `Microsoft.Sql`) |
 | `registration` | Entra | **Cloud Application Administrator**. (Application Developer may be enough, since whoever creates the registration becomes its owner — we have not measured it, so it is not what this document tells you to arrange.) |
 | `deploy` | Azure | **Owner** on the subscription — or Contributor **plus** User Access Administrator / Role Based Access Control Administrator. The deployment creates role assignments (pull rights on the registry, three queue roles), and Contributor alone cannot create a role assignment |
+| `group` | Entra | enough to **create a security group**. Many tenants let any user; where that is turned off it needs **Groups Administrator** |
 | `signin` | Entra | the same as `registration` |
-| `database` | the database | whoever the deploy named as the SQL Entra administrator — by default, you — and **TCP 1433 outbound** from the machine you run it on. No directory right at all |
+| `bootstrap` | Azure | enough to add a group member and start a container app job. **No database access at all** — the work happens inside Azure, done by the product's own migrate job |
 | `permissions` | Entra | **Privileged Role Administrator** or Global Administrator. Granting an application permission is consent, which is a larger right than deploying |
 | `mail` | Exchange Online | **Exchange Administrator**, for the mailbox, the group and the access policy |
 | `verify` | — | none |
@@ -113,16 +119,23 @@ and reads the live state rather than a file left behind by the last one.
 
 ### On the machine you run it from
 
-- **PowerShell 7.2 or newer** (`pwsh`). Windows PowerShell 5.1 is refused.
-- `Az.Accounts` and `Az.Resources` — always.
-- `SqlServer` — for the database phase.
-- `ExchangeOnlineManagement` — for the mail phase.
+**Two things, and one of them you are already in.**
+
+- **The Azure CLI** — [aka.ms/installazurecli](https://aka.ms/installazurecli) — signed in with `az login`.
+- **A PowerShell**: Windows PowerShell 5.1, which every Windows administrator already has, or PowerShell 7.
+
+**No PowerShell modules, and no connection to your database.** The installer talks to Azure and to Entra through
+`az`, and the two database users the product needs are created **from inside Azure** by its own migrate job. Nothing
+here needs TCP 1433 open from your machine — which is the port most corporate networks block, and which used to be
+where this install stopped for reasons that had nothing to do with the product.
+
+**The one exception is the mail phase**, and it is not ours to remove: an Exchange Online application access policy
+is the only thing that narrows this product's permission to send mail to a single mailbox, and Microsoft Graph has
+no API for one. That phase — and only that phase — needs a module:
 
 ```powershell
-Install-Module Az.Accounts, Az.Resources, SqlServer, ExchangeOnlineManagement -Scope CurrentUser
+Install-Module ExchangeOnlineManagement -Scope CurrentUser
 ```
-
-Each phase names the module it needs when it is missing, so you do not have to install the ones you will not reach.
 
 ### What to have decided
 
@@ -131,7 +144,7 @@ Each phase names the module it needs when it is missing, so you do not have to i
 | Subscription and region | one region holds the whole stamp |
 | The container image | the reference EnterCloud gives you, **with its version tag**. See §3 |
 | The first Administrator | a person who signs in, applies the schema and configures the deployment. It grants them nothing in Entra |
-| The database administrator | defaults to you. A **group** is better: a person leaves, and only this principal can create the database users |
+| The database administrator group | a name — the installer creates the group. The product's worker identity is added to it, which is what lets the deployment create its own database users; **membership is also how a person reaches that database directly**, and nobody but the deployment is added |
 | The notice mailbox | a shared mailbox that already exists. **Its display name is what every recipient sees** — see §5 |
 | The sender group | a mail-enabled security group. It is what the Exchange policy is scoped to |
 | An address outside that group | used once, to prove the policy actually refuses somebody. Any other mailbox in your tenant |
@@ -221,33 +234,35 @@ Split across the people who hold the rights. **The order matters and the script 
 refuses with what is missing rather than proceeding, so a wrong order costs a message and not a half-install:
 
 ```powershell
-# 1. the Entra administrator — first, because the web app refuses to start without this registration's client id
-./install.ps1 -Only registration -AdministratorUpn anna@contoso.com
+# 1. the Entra administrator — the group that will administer the database, and the registration people sign in
+#    against. The registration comes before the deployment because the web app refuses to start without its
+#    client id
+.\install.ps1 -Only group,registration -DatabaseAdminGroup sql-eam-prod-admins -AdministratorUpn anna@contoso.com
 
-# 2. the subscription owner — the stamp itself
-./install.ps1 -Only preflight,deploy -SubscriptionId <id> -Location swedencentral -Image <reference>
+# 2. the subscription owner — the deployment itself
+.\install.ps1 -Only preflight,deploy -SubscriptionId <id> -Location swedencentral
 
-# 3. the Entra administrator again — the redirect URI and the federated credential need the deployed hostname
-#    and the deployed identity, which is why this is not part of step 1
-./install.ps1 -Only signin
+# 3. the Entra administrator again — the redirect URI and the federated credential need the deployed hostname and
+#    the deployed identity, which is why this is not part of step 1
+.\install.ps1 -Only signin
 
-# 4. whoever the deploy named as the database administrator, from a machine that can reach TCP 1433
-./install.ps1 -Only database
+# 4. anybody with rights on the deployment — no database access, no port. This adds the worker identity to the
+#    group and starts the product's own migrate job, which creates the database user and applies the schema
+.\install.ps1 -Only bootstrap
 
 # 5. the Privileged Role Administrator — consent
-./install.ps1 -Only permissions
+.\install.ps1 -Only permissions
 
 # 6. the Exchange administrator — in the same sitting as step 5, see §5
-./install.ps1 -Only mail -NoticeMailbox appmanager@contoso.com `
-                         -SenderGroup eam-notice-senders@contoso.com `
-                         -OutsideAddress someone.else@contoso.com
+.\install.ps1 -Only mail -NoticeMailbox appmanager@contoso.com `
+                          -SenderGroup eam-notice-senders@contoso.com `
+                          -OutsideAddress someone.else@contoso.com
 
 # 7. anybody
-./install.ps1 -Only verify
+.\install.ps1 -Only verify
 ```
 
-Steps 1–3 can be one command (`-Only registration,preflight,deploy,signin`) when the same person holds both rights;
-that is what plain `./install.ps1` does.
+Steps 1–4 can be one command when the same person holds those rights; that is what plain `.\install.ps1` does.
 
 `-NonInteractive` refuses instead of prompting, for a pipeline. `-Plain` swaps the icons for ASCII on a console
 that cannot draw them.
@@ -256,11 +271,12 @@ that cannot draw them.
 
 | Phase | What it does, and what it verifies afterwards |
 |---|---|
-| `preflight` | signs you in, confirms which tenant this will watch, registers the resource providers the deployment needs |
+| `preflight` | confirms the CLI and the sign-in, which tenant this will watch, and registers the resource providers the deployment needs |
 | `registration` | creates the app registration people sign in against, declares the four app roles, creates its enterprise application, and assigns **Administrator** to the person you name. **No client secret is created, here or ever** |
 | `deploy` | deploys the whole stamp — one pass, or three steps if the image has to be copied in. Refuses a placeholder image |
 | `signin` | reads the hostname off the running app, registers it as the redirect URI, and creates the federated credential that lets the web app authenticate **without a secret** |
-| `database` | creates one database user per managed identity, by SID rather than by directory lookup, and then **asks the database whether they are there**. Opens a firewall rule for your address and removes it again even if the step fails |
+| `group` | creates the security group that will administer the database, or finds it. Adds nobody but the deployment, and prints the one command that adds a person |
+| `bootstrap` | adds the worker identity to that group, then starts the product's own **migrate job** — which creates the web tier's database user by SID and applies the schema. Reads the job's log back, because that is where the evidence is. **Touches no database and needs no port** |
 | `permissions` | grants the four Graph permissions, then lists anything held **beyond** them |
 | `mail` | checks the mailbox and the group, creates the Exchange application access policy, and proves it both ways |
 | `verify` | reads `/healthz` and `/api/schema` off the running deployment and prints what is left for a human |
@@ -365,11 +381,14 @@ account.
 
 ## 7. Things that will bite
 
-- **TCP 1433 is blocked on many corporate networks**, and the database phase is the only one that needs it. It
-  fails with a connection timeout that reads like a broken deployment. Run that one phase from somewhere that can
-  reach it: `./install.ps1 -Only database`.
-- **Only the SQL Entra administrator can create the database users.** If the deploy named a group, you must be in
-  it. Nobody else — not even the subscription owner — can do this step.
+- **A new group membership is not instant.** The bootstrap adds the product's worker identity to the database
+  administrator group and then starts the migrate job, which authenticates as that identity — and a membership that
+  has not propagated yet fails as *login failed for user*, which reads like a wrong password in a product that has
+  none. The installer waits, and if the job still fails, **start it again**: it is idempotent, and the second
+  attempt is the ordinary fix rather than a workaround.
+- **Nobody can connect to that database except members of the group.** That is the design (`0064`) and not an
+  oversight: the installer adds only the deployment itself, so if you need to read the database by hand, add
+  yourself — `az ad group member add --group <the group> --member-id <your object id>`. Nothing else has to change.
 - **A resource provider that is not registered fails the deployment** with `MissingSubscriptionRegistration`, which
   names the namespace and not the remedy. The preflight phase registers them; registration itself can take a few
   minutes to complete in the background.
@@ -413,10 +432,11 @@ to whoever happens to be running the upgrade.
 that can serve it, and a build below that floor refuses to start rather than reading columns it does not
 understand. That refusal names the migration it is missing. Below the floor, the way back is forward.
 
-**Remove** — delete the resource group, then the three things that live outside it: the app registration
-(`entra-app-manager-<environment>`), the Graph permissions granted to the worker identity, and the Exchange
-application access policy (`Remove-ApplicationAccessPolicy`). None of them is deleted by deleting the resource
-group, and the access policy left behind refers to an identity that no longer exists.
+**Remove** — delete the resource group, then the four things that live outside it: the app registration
+(`entra-app-manager-<environment>`), the Graph permissions granted to the worker identity, the **database
+administrator group**, and the Exchange application access policy (`Remove-ApplicationAccessPolicy`). None is
+deleted by deleting the resource group, and both the access policy and the group left behind refer to an identity
+that no longer exists.
 
 ---
 
@@ -432,6 +452,8 @@ group, and the access policy left behind refers to an identity that no longer ex
   your identity surface and the first three characters of each secret; it does not expose a usable credential.
 - **No secret exists in the deployment** — every connection is a managed identity, and the sign-in registration
   uses a federated credential.
+- **The installer never connects to your database**, and nothing outside Azure needs to: the users the product needs
+  are created by its own migrate job, whose identity is a member of the group that administers the server.
 - The **journal is append-only**, enforced where the writes happen rather than by convention: entries cannot be
   deleted and cannot be edited, and each act is recorded **before** it is attempted so a failure leaves a trace
   rather than a silence.

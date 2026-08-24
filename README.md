@@ -1,2 +1,2 @@
-# entra-app-manager-releases
-Release repository of App Manager for Microsoft Entra
+# App Manager for Entra
+App Manager for Microsoft Entra release repository

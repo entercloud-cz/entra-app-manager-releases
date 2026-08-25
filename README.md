@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 3.0.2.** It is generated from that release's own guide — an older release's
+- **This page describes 3.1.0.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.0.2`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.1.0`
 
 ---
 
@@ -150,7 +150,7 @@ Nothing to install, and nothing that fails on how your account is named.
 | The first Administrator | a person who signs in, applies the schema and configures the deployment. It grants them nothing in Entra |
 | The database administrator group | a name — the installer creates the group. The product's worker identity is added to it, which is what lets the deployment create its own database users; **membership is also how a person reaches that database directly**, and nobody but the deployment is added |
 | The notice mailbox | a shared mailbox that already exists. **Its display name is what every recipient sees** — see §5 |
-| An address outside the scope | used once, to prove the assignment actually refuses somebody. Any other mailbox in your tenant |
+| The address people will open | only if it is **not** the hostname Azure generates. Entra refuses a redirect URI it was never told about, so a custom domain has to be registered — the generated one always is, and nothing means "that one" |
 
 ---
 
@@ -245,9 +245,10 @@ refuses with what is missing rather than proceeding, so a wrong order costs a me
 # 2. the subscription owner — the deployment itself
 .\install.ps1 -Only preflight,deploy -SubscriptionId <id> -Location swedencentral
 
-# 3. the Entra administrator again — the redirect URI and the federated credential need the deployed hostname and
-#    the deployed identity, which is why this is not part of step 1
-.\install.ps1 -Only signin
+# 3. the Entra administrator again — the redirect URIs and the federated credential need the deployed hostname and
+#    the deployed identity, which is why this is not part of step 1. -PublicFqdn is the address people will open;
+#    leave it out if that is the hostname Azure generated
+.\install.ps1 -Only signin -PublicFqdn eam.contoso.com
 
 # 4. anybody with rights on the deployment — no database access, no port. This adds the worker identity to the
 #    group and starts the product's own migrate job, which creates the database user and applies the schema
@@ -257,9 +258,7 @@ refuses with what is missing rather than proceeding, so a wrong order costs a me
 .\install.ps1 -Only permissions
 
 # 6. the Exchange administrator — in the same sitting as step 5, see §5
-.\install.ps1 -Only mail -NoticeMailbox appmanager@contoso.com `
-
-                          -OutsideAddress someone.else@contoso.com
+.\install.ps1 -Only mail -NoticeMailbox appmanager@contoso.com
 
 # 7. anybody
 .\install.ps1 -Only verify
@@ -270,18 +269,32 @@ Steps 1–4 can be one command when the same person holds those rights; that is 
 `-NonInteractive` refuses instead of prompting, for a pipeline. `-Plain` swaps the icons for ASCII on a console
 that cannot draw them.
 
+### It remembers what you told it
+
+After a run — including a run that stopped with a refusal — the script writes
+`install-answers.<workload>-<environment>.json` **beside itself**, and offers those values back as the defaults next
+time. **An upgrade is this script again**, so without that memory the person upgrading retypes a subscription id, a
+region, a group name and a mailbox, and one typo deploys something *beside* the deployment they meant to change —
+silently, with every command succeeding.
+
+- **Names, ids and choices only.** The file is built from a closed list, so it cannot hold anything else, and there is no secret in this install to hold — no client secret exists anywhere in the deployment. Open it and see.
+- **A value you pass on the command line always wins.** It is a memory, not a configuration file.
+- **It is per deployment, twice over:** the file is named for the workload and environment, and it records them too — so a file that was copied or renamed is refused rather than offered. A remembered value from the wrong stamp is worse than no memory at all.
+- **Delete it** to be asked everything again. A missing or unreadable file changes nothing about how the script behaves.
+- Keep it out of source control if you keep the bundle in any.
+
 ### What each phase does
 
 | Phase | What it does, and what it verifies afterwards |
 |---|---|
 | `preflight` | confirms the CLI and the sign-in, which tenant this will watch, and registers the resource providers the deployment needs |
-| `registration` | creates the app registration people sign in against, declares the four app roles, creates its enterprise application, and assigns **Administrator** to the person you name. **No client secret is created, here or ever** |
+| `registration` | creates the app registration people sign in against — called **App Manager for Microsoft Entra**, with the environment in brackets on anything but `prod` — declares the four app roles, creates its enterprise application, and assigns **Administrator** to the person you name. A registration an earlier version created under its old name is **found and renamed**, never duplicated. **No client secret is created, here or ever** |
 | `deploy` | deploys the whole stamp — one pass, or three steps if the image has to be copied in. Refuses a placeholder image |
-| `signin` | reads the hostname off the running app, registers it as the redirect URI, and creates the federated credential that lets the web app authenticate **without a secret** |
+| `signin` | reads the hostname off the running app and registers it, asks for the address **people will actually open** and registers that beside it, and creates the federated credential that lets the web app authenticate **without a secret** |
 | `group` | creates the security group that will administer the database, or finds it. Adds nobody but the deployment, and prints the one command that adds a person |
 | `bootstrap` | adds the worker identity to that group, then starts the product's own **migrate job** — which creates the web tier's database user by SID and applies the schema. Reads the job's log back, because that is where the evidence is. **Touches no database and needs no port** |
-| `permissions` | grants the four Graph permissions, then lists anything held **beyond** them |
-| `mail` | checks the mailbox, creates the Exchange scope and the `Application Mail.Send` assignment, and proves it both ways |
+| `permissions` | grants the three Graph permissions, then lists anything held **beyond** them |
+| `mail` | checks the mailbox, creates the Exchange scope and the `Application Mail.Send` assignment, and asks Exchange whether the mailbox is inside it |
 | `verify` | reads `/healthz` and `/api/schema` off the running deployment and prints what is left for a human |
 
 ### Why the registration comes before the deployment
@@ -291,6 +304,13 @@ deployment serving pages nobody can sign in to is worse than one that stops and 
 registration first is what makes the deployment a single pass. The redirect URI has to wait until afterwards,
 because the hostname is generated by the platform and is read off the running app rather than assembled from a
 pattern.
+
+**And if people will open a different address, say so when `signin` asks.** Entra matches a redirect URI exactly and
+refuses one it was never told about — naming the URI, not the omission — so a deployment behind a custom domain
+cannot be signed in to until that address is registered. Both are registered, sign-in and sign-out paths for each,
+and the generated hostname is never replaced. Registering an address does not create it: the custom domain still has
+to resolve to the deployment. Entra's **front-channel logout URL** is a single value and points at the address you
+gave; that only matters when something else signs a person out, and sign-out from the product works on both.
 
 ### Until the permissions are consented
 
@@ -332,9 +352,14 @@ There is **no mail-enabled security group** in this any more. The old mechanism 
 access policy's scope had to be a group; a management scope is a filter, so it can name the mailbox directly. One
 fewer object, no waiting for a group to replicate, and no rule about nested members falling outside the scope.
 
-The script then **verifies it in both directions**: Exchange must report the mailbox *in* scope for that role, and
-an address outside it *out* of scope. That second check is the point rather than a flourish — an assignment that
-exists and does not bite looks exactly like one that works.
+The script then **asks Exchange whether it bites**: the mailbox must come back *in scope* for that role, or the
+phase stops. Verified rather than asserted, because an assignment that exists and does not work looks exactly like
+one that does.
+
+It used to ask you for a second address as well, and check that the scope *excluded* it. That is gone. The failure
+it caught belonged to the old mechanism — a tenant-wide right narrowed afterwards, where a fence around nothing was
+indistinguishable from a fence that held. There is no tenant-wide right now, the phase refuses to build a scope
+beside one, and the filter is a single address the script writes itself.
 
 > ⚠ **Upgrading from a release before 3.0.0?** Your deployment holds tenant-wide `Mail.Send` from the old
 > mechanism, and it has to be **removed** — until it is, you have both authorities, which means no scoping at all.
@@ -384,11 +409,18 @@ account.
 
 ## 7. Things that will bite
 
-- **A new group membership is not instant.** The bootstrap adds the product's worker identity to the database
-  administrator group and then starts the migrate job, which authenticates as that identity — and a membership that
-  has not propagated yet fails as *login failed for user*, which reads like a wrong password in a product that has
-  none. The installer waits, and if the job still fails, **start it again**: it is idempotent, and the second
-  attempt is the ordinary fix rather than a workaround.
+- **A new group membership is not instant, and starting the job again is the whole fix.** The bootstrap adds the
+  product's worker identity to the database administrator group and then starts the migrate job, which authenticates
+  as that identity — and a membership that has not reached the token yet fails as *login failed for user*, which reads
+  like a wrong password in a product that has none. The job now says exactly that, in one sentence, beginning
+  `LOGIN REFUSED:`, and the installer knows the difference between that ending and a real fault: it asks the first one
+  again and stops on the second.
+
+  **Nothing has to age out and nothing needs restarting by hand.** Measured on two stamps: an execution that was
+  refused at 14:30:03 succeeded at 14:32:31 with nothing changed in between — a new execution asks for a new token,
+  and the new token carries the group as soon as Entra has replicated it. Under three minutes both times. If it is
+  still refused well past that, the membership or the server's administrator is what to check, and the message names
+  both.
 - **Nobody can connect to that database except members of the group.** That is the design (`0064`) and not an
   oversight: the installer adds only the deployment itself, so if you need to read the database by hand, add
   yourself — `az ad group member add --group <the group> --member-id <your object id>`. Nothing else has to change.
@@ -419,27 +451,38 @@ account.
 
 ## 8. Upgrading, rolling back, removing
 
-**Upgrade** — deploy the new image, then let the product finish it:
+**Upgrade — one command, and it is not the install:**
 
 ```powershell
-./install.ps1 -Only deploy,verify -Image <new reference>
+./install.ps1 -Only upgrade -Image <new reference>
 ```
 
-The container starts either way. If the release carries a schema change, the deployment serves its upgrade screen
-and an Administrator presses the button; `verify` says how many migrations are pending. Nothing is applied behind
-your back and nothing is applied because a container restarted.
+Four steps and no questions. It points the product's own migrate job at the new image and **runs it** — the plan,
+each migration's declared cost and the backup line are printed before anything is touched — then rolls the web app
+and all three background jobs, then asks the running deployment what it is serving.
 
-That command is short on purpose: an upgrade **reads back what this stamp already decided** rather than defaulting
-it. The region comes from the resource group that exists, and the database administrator from the SQL server that
-exists — so a re-run cannot quietly move the stamp to another region, and cannot hand the database's administration
-to whoever happens to be running the upgrade.
+- **The schema moves before the application, and that order is the point.** The web tier refuses to serve a schema
+  behind its build, so the other way round means a deployment that stops serving until the migration lands.
+- **`-WhatIf` walks the whole thing and changes nothing.** Worth doing first on a deployment people are using.
+- **It refuses to be an install.** Pointed at a deployment that does not exist, it says so and stops.
+- **It asks nothing you have already answered.** The region, the group, the registration and the mailbox are
+  already true; an upgrade reads them rather than defaulting them, so it cannot move your stamp to another region or
+  hand your database's administration to whoever is running the upgrade.
+- **Every workload that runs the image is rolled together.** One left behind runs the previous release's code
+  against the new schema.
+- **There are no down migrations.** Take a backup you would be willing to restore. The command says so before it
+  applies anything.
 
 **Roll back** — the same command with the previous reference. It is bounded: the schema records the oldest build
 that can serve it, and a build below that floor refuses to start rather than reading columns it does not
 understand. That refusal names the migration it is missing. Below the floor, the way back is forward.
 
+**And if you roll an image some other way** — your own pipeline, or `az containerapp update` by hand — nothing is
+lost: the deployment serves its **upgrade screen** and refuses everything else until an Administrator applies the
+migration there. Nothing is ever applied because a container restarted.
+
 **Remove** — delete the resource group, then the four things that live outside it: the app registration
-(`entra-app-manager-<environment>`), the Graph permissions granted to the worker identity, the **database
+(**App Manager for Microsoft Entra**, with the environment in brackets on anything but production), the Graph permissions granted to the worker identity, the **database
 administrator group**, and — in Exchange — the management scope, the role assignment and the service principal
 pointer. Deleting the resource group deletes none of them. Exchange removes the pointer and its assignments by
 itself when the managed identity goes, so what is genuinely left behind is the management scope and the group, and both refer to an identity

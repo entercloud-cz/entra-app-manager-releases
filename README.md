@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 3.1.1.** It is generated from that release's own guide — an older release's
+- **This page describes 3.2.0.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.1.1`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.2.0`
 
 ---
 
@@ -76,6 +76,7 @@ One resource group, `rg-eam-prod` (the names come from `-Workload` and `-Environ
 | Two user-assigned managed identities | one for the web app, one for the background worker. **The web one holds no Graph permission, ever** — that is what stops a compromise of the internet-facing tier from reaching your tenant |
 | Container Apps environment, one web app | the product. The template pins a minimum of one replica, so this is a fixed monthly cost rather than a usage-based one |
 | Four Container Apps jobs | a scheduler on a one-minute cron that only decides what is due, two workers that do the work, and a manual migrate job |
+| **And, only if you say yes to self-update:** a third identity, a custom role definition, one more queue and a fifth job | see *Letting the deployment update itself* below. Nothing here is created unless you ask for it |
 | Azure SQL — server and one database | the register, the journal, everything recorded. **Entra-only authentication, no password anywhere** |
 | Storage account | the work queues, and the key ring that keeps people signed in across a restart. Shared-key access disabled, so there is no connection string to leak |
 | Container registry | created by the template. It holds the product image when the image has to be copied into your subscription (§3); with an anonymously pullable reference nothing is stored in it |
@@ -93,6 +94,45 @@ The installer adds nobody else.
 **No secret exists in a deployed stamp.** The database, the queues, the key ring and Microsoft Graph are all
 reached with managed identity, and the sign-in registration authenticates with a federated credential rather than
 a client secret. The application refuses to start if a connection string ever arrives with a password in it.
+
+### Letting the deployment update itself — a question the installer asks
+
+The product tells you when a newer release exists, whichever way you answer this. What the answer decides is
+**whether it can apply one for you**, or whether applying one means running the installer again.
+
+**Saying no costs you nothing you have not already accepted**: an update is `./install.ps1 -Only upgrade`, run by
+somebody with Contributor on the resource group, and the product prints the exact command on the screen that told
+you about the release. That is the whole of the difference.
+
+**Saying yes adds one managed identity, and it is worth understanding what that identity can do.** It holds a
+**custom role definition with four actions** — read and write on this resource group's container apps and jobs —
+and nothing else: no access to your directory, no ability to change the database schema, no other queue. Azure has
+no narrower permission for *may set an image*, so that right is genuinely the right to change what containers in
+this resource group run. Nothing that faces the internet holds it: the web app cannot, the worker that reads your
+directory cannot, and the one job that can holds no directory access of its own.
+
+What it will and will not do, all of it enforced in the deployment rather than promised here:
+
+- it applies **only a version we have published** — the request carries a version number and the image reference is
+  built inside the deployment, so nothing that could be typed or injected chooses what runs;
+- it **refuses a major release** and hands you the command instead, because a major version in this product means
+  the upgrade needs a step outside it — a template deployment, a consent, something in Exchange;
+- it **watches the new version come up** on the deployment's own health endpoint and **puts the previous image back
+  automatically** if it does not;
+- it **never touches your database**. A release that migrates still asks for the migration on the product's own
+  upgrade screen, because when your schema moves stays your decision;
+- every roll is recorded with who asked, from which version to which, and what came of it.
+
+**A later re-run will not take it away by accident.** An ordinary `./install.ps1` on a deployment that already
+updates itself reads that off the deployment and keeps it — including from a fresh download that has never seen your
+answers file. It says so when it does.
+
+**You can change your mind in one direction easily.** `./install.ps1 -SelfUpdate` adds it to a deployment that said
+no — the whole command, not `-Only deploy`: the updater needs a database user, and that is created by the migrate job
+in the bootstrap phase. A run that skips it says so and tells you what to run. Taking it away is a deliberate removal rather than re-running with the answer flipped: the template deploys
+incrementally, so what it no longer declares keeps existing. Re-running with `-SelfUpdate:$false` stops the product
+offering the control and leaves the identity, the role, the queue and the job in place; the commands to remove those
+are in §8.
 
 ---
 
@@ -151,6 +191,7 @@ Nothing to install, and nothing that fails on how your account is named.
 | The database administrator group | a name — the installer creates the group. The product's worker identity is added to it, which is what lets the deployment create its own database users; **membership is also how a person reaches that database directly**, and nobody but the deployment is added |
 | The notice mailbox | a shared mailbox that already exists. **Its display name is what every recipient sees** — see §5 |
 | The address people will open | only if it is **not** the hostname Azure generates. Entra refuses a redirect URI it was never told about, so a custom domain has to be registered — the generated one always is, and nothing means "that one" |
+| **Whether the deployment may update itself** | the installer asks, and the default is no. It is a decision about one managed identity's rights rather than about a feature — §1 says exactly what that identity can do, and either answer leaves you a working deployment that tells you when a release exists |
 
 ---
 
@@ -196,7 +237,7 @@ subscription before the deployment runs**, and there are two shapes that can tak
 
 **A public reference, which is the ordinary case and needs no credential at all:**
 
-    ghcr.io/entercloud-cz/entra-app-manager:v3.1.1
+    ghcr.io/entercloud-cz/entra-app-manager:v3.2.0
 
 `install.ps1` from a release already points at the version it was published with, so you do not have to pass
 `-Image` at all. The release notes carry the **digest** beside the tag; pass that instead if you would rather pin
@@ -469,7 +510,17 @@ and all three background jobs, then asks the running deployment what it is servi
   already true; an upgrade reads them rather than defaulting them, so it cannot move your stamp to another region or
   hand your database's administration to whoever is running the upgrade.
 - **Every workload that runs the image is rolled together.** One left behind runs the previous release's code
-  against the new schema.
+  against the new schema. That includes the updater job, on a deployment that has one — it is asked about rather
+  than assumed, so this command works the same on a deployment that never had self-update.
+
+**Or, on a deployment that updates itself, press the button** (§1, *Letting the deployment update itself*). It does
+the same roll and adds the two things a person at a keyboard would otherwise do: it watches the new version come up
+and puts the previous image back if it does not. Two differences are worth knowing before you rely on it:
+
+- **It does not migrate**, so a release that changes the database leaves the upgrade screen waiting — which is the
+  same screen the command above would have left you if you had rolled the image by hand.
+- **It refuses a major release.** A major version means the upgrade needs a step outside the product, so the panel
+  hands you the command instead. The command is the path for those, always.
 - **There are no down migrations.** Take a backup you would be willing to restore. The command says so before it
   applies anything.
 
@@ -480,6 +531,25 @@ understand. That refusal names the migration it is missing. Below the floor, the
 **And if you roll an image some other way** — your own pipeline, or `az containerapp update` by hand — nothing is
 lost: the deployment serves its **upgrade screen** and refuses everything else until an Administrator applies the
 migration there. Nothing is ever applied because a container restarted.
+
+**Removing self-update but keeping the deployment** — the template will not do it for you, because an incremental
+deployment leaves what it no longer declares running. Re-run the installer with `-SelfUpdate:$false` first, so the
+product stops offering the control, and then remove the four resources by hand:
+
+```powershell
+$rg   = 'rg-eam-prod'      # your resource group
+$name = 'eam'; $env = 'prod'
+
+az containerapp job delete --name "caj-$name-updater-$env" --resource-group $rg --yes
+az identity delete          --name "id-$name-updater-$env" --resource-group $rg
+az role definition delete   --name "App Manager image roll ($name-$env)"
+az storage queue delete     --name update        --account-name <the storage account> --auth-mode login
+az storage queue delete     --name update-poison --account-name <the storage account> --auth-mode login
+```
+
+Deleting the identity removes its role assignments with it. The database user it was given stays until somebody drops
+it, and it can do nothing without an identity to authenticate as. Run `./install.ps1 -Only permissions` afterwards:
+it reports the absence as normal, which is how you know the deployment is back to applying updates by command.
 
 **Remove** — delete the resource group, then the four things that live outside it: the app registration
 (**App Manager for Microsoft Entra**, with the environment in brackets on anything but production), the Graph permissions granted to the worker identity, the **database
@@ -507,3 +577,7 @@ that no longer exists.
 - The **journal is append-only**, enforced where the writes happen rather than by convention: entries cannot be
   deleted and cannot be edited, and each act is recorded **before** it is attempted so a failure leaves a trace
   rather than a silence.
+- It **cannot change what it runs** unless you asked for that at install time, and where you did, the right belongs
+  to one identity that holds nothing else — it may set an image in this resource group, and it may not reach your
+  directory, your schema, or anything else. It applies only versions we have published, refuses a release whose
+  number says a person is needed, and puts the previous image back if the new one does not come up.

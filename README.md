@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 3.4.0.** It is generated from that release's own guide — an older release's
+- **This page describes 3.4.1.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.4.0`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.4.1`
 
 ---
 
@@ -46,7 +46,7 @@ They belong to the next mode, which is a different permission grant and a differ
 | `User.Read.All` | application, read | turning an owner into a person with an address, offering your users in every field that names somebody, and naming the people on the access list | notices have nobody to go to, fields that name a person offer only what you record by hand, and the access list has ids without names |
 | `Group.Read.All` | application, read | offering your mail-enabled groups in those same fields — "the owning team" is usually a distribution list — **and expanding a group that carries a role, all the way down** | groups cannot be named, and access granted through a group cannot be traced to the people it reaches |
 
-**The access list needs no fourth permission, and that is deliberate.** Who can sign in is read from the two above:
+**The access list needs no fourth permission and nothing configured, and both are deliberate.** Who can sign in is read from the two above:
 the assignments from the same permission the register uses, the group expansion from the same one the pickers use.
 What it does NOT read is Entra's own sign-in activity, which would need `AuditLog.Read.All` and an Entra ID P1
 licence — so *last seen* on that list is this deployment's own record of somebody using it, and says so.
@@ -242,7 +242,7 @@ subscription before the deployment runs**, and there are two shapes that can tak
 
 **A public reference, which is the ordinary case and needs no credential at all:**
 
-    ghcr.io/entercloud-cz/entra-app-manager:v3.4.0
+    ghcr.io/entercloud-cz/entra-app-manager:v3.4.1
 
 `install.ps1` from a release already points at the version it was published with, so you do not have to pass
 `-Image` at all. The release notes carry the **digest** beside the tag; pass that instead if you would rather pin
@@ -487,6 +487,14 @@ account.
   ```bash
   az sql db list-editions -l <region> --edition Standard --service-objective <objective> --show-details max-size
   ```
+- **The Azure CLI can fail on your machine, and the installer now says so rather than blaming your tenant.**
+  Measured on a customer's Windows machine: the same read failed and then passed, and each run of the installer got
+  one step further until the install completed. The CLI has two known faults with this shape — it can crash while
+  reporting an HTTP error, losing the error, and it can lose its own token-cache file to itself between commands.
+  A **read** is therefore attempted three times before the installer gives up, and it says which attempt it is on;
+  a **write** is never repeated. If it still stops, the message says whether the fault is this machine or your
+  tenant. Where it is the machine, repair the CLI — `az version`, then reinstall it — and run the installer again:
+  it resumes, and nothing you have already answered has to be typed twice.
 - **Being behind is invisible unless somebody looks.** `https://<host>/healthz` answers with the build and commit
   that is actually serving. Nothing in the product nags you about a newer release.
 - **Deleting the resource group deletes the record.** The register can be rebuilt from Entra in one refresh; the

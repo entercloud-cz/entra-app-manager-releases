@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 3.6.0.** It is generated from that release's own guide — an older release's
+- **This page describes 3.7.0.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.6.0`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.7.0`
 
 ---
 
@@ -37,6 +37,32 @@ our code declines to, but because Entra was never asked.
 What it therefore does **not** have in this mode: requests, approvals, provisioning, credential collection. Those
 surfaces are not greyed out — they are absent, and their addresses answer that this deployment does not have them.
 They belong to the next mode, which is a different permission grant and a different conversation.
+
+### What the free licence asks — read this before you start, not at step 2
+
+**One page of numbers a day leaves this deployment and comes to EnterCloud, and the free licence is conditional on
+an Administrator accepting that.** It is not a setting you will find later and turn off. The first time somebody
+signs in after installing, the deployment serves **that one screen and nothing else** until it is accepted — so plan
+the install for a moment when a person holding the Administrator role can sign in (§6 step 2).
+
+**What travels**: how many people used it that day; applications and credentials counted by state and by kind; how
+many credentials have expired; how many notifications went out, by kind; which release this deployment runs and in
+which mode; the expiry thresholds it uses, in days; whether each of nine settings is filled in; and, for anything
+that failed, **what kind of failure it was and how many times** — a background job's name and the error's type.
+
+**What never travels, and has nowhere in the report to go**: the name of any user, application or group; any address;
+any note, tag or justification anybody typed; any secret, certificate or fingerprint; anything identifying one
+credential or one registration; and **the text of an error message**. A setting travels as *filled in* or *empty*,
+never as its value — an administrator's address is `true`, not the address. A failure travels as a type, because a
+message can quote the name of one of your applications and a type cannot.
+
+**You can check that list rather than take it.** Every report is kept for seven days in this deployment's own
+database as the exact text that was sent, sent or not, and Administration shows them: open a day and you are reading
+the payload itself.
+
+**Accepting needs no network access of any kind.** The consent is written to your database and the product serves
+from that moment; registering with EnterCloud is retried in the background until it succeeds. A deployment that can
+never reach us works exactly as one that can — see §9, which is the same statement made about egress.
 
 ### The three permissions, and what each one buys
 
@@ -242,7 +268,7 @@ subscription before the deployment runs**, and there are two shapes that can tak
 
 **A public reference, which is the ordinary case and needs no credential at all:**
 
-    ghcr.io/entercloud-cz/entra-app-manager:v3.6.0
+    ghcr.io/entercloud-cz/entra-app-manager:v3.7.0
 
 `install.ps1` from a release already points at the version it was published with, so you do not have to pass
 `-Image` at all. The release notes carry the **digest** beside the tag; pass that instead if you would rather pin
@@ -419,7 +445,7 @@ before treating it as broken.
 
 ---
 
-## 6. After the install — four things, all inside the product
+## 6. After the install — five things, all inside the product
 
 The script prints these as it finishes; this is the longer form.
 
@@ -429,19 +455,28 @@ before pressing it, and have a backup you would be willing to restore — **ther
 the container back is supported; rolling the schema back is a restore. Nothing migrates because a container
 started, which is why this is a screen and not a side effect.
 
-**2. Administration → General.** Confirm the mode reads **Watch and notify** (it is the default). Name who this
+**2. Read the telemetry screen and accept it.** The next thing the product serves is one screen and nothing else: what
+this deployment sends to EnterCloud once a day — counts, versions, and whether a setting is filled in — and, at greater
+length, what it never sends: no names of your applications, people or groups, no addresses, no secrets, nothing that
+identifies one credential or one registration. **Accepting is a condition of the free licence**, so there is no way past
+it; it asks for your company name and an address for us to write to about this installation, and it needs no network
+access of any kind. Every report that goes out afterwards is kept in your own database, as the text that was sent, for an
+Administrator to read. Only an Administrator can accept — somebody else reaching it first gets an explanation and the
+offer to sign in as another account.
+
+**3. Administration → General.** Confirm the mode reads **Watch and notify** (it is the default). Name who this
 deployment belongs to — the system administrator, who is the last recipient of every notification chain. Type the
 address people open this deployment at: every notice carries one link, built from that address, and **notices stay
 inactive until both it and the mailbox are set**, because a mail about credentials whose only button goes nowhere
 is worse than plain text.
 
-**3. Administration → Notifications.** Set the sender to your shared mailbox. Set who hears about an application
+**4. Administration → Notifications.** Set the sender to your shared mailbox. Set who hears about an application
 nobody claims. Set the three expiry thresholds — informative, warning, critical; an empty one means that notice is
 off. Then **send the test mail**, which is what proves §5 end to end. The mailbox is set here rather than in
 configuration on purpose: a setting that needed a redeployment to change would be a setting you had to ask us to
 change for you.
 
-**4. Administration → System.** The register is read on a cadence **you** set here, not one we deploy. Make the
+**5. Administration → System.** The register is read on a cadence **you** set here, not one we deploy. Make the
 projection refresh due once and watch it fill, then the expiry scan. Changing a cadence is journalled with the name
 of whoever changed it.
 
@@ -578,6 +613,14 @@ that no longer exists.
 - It can **read** your applications, users and mail-enabled groups, and it can **send mail as one mailbox**. That
   is the entire set.
 - It **cannot write anything to Entra.** No permission it holds allows it.
+- **Two things leave this deployment, and nothing else does.** The first is the **daily report to EnterCloud** —
+  counts, version numbers, and whether a setting is filled in; never a name, an address or a value. It is what the
+  free licence is conditional on, an Administrator accepted it by name (§6), and it **cannot be switched off** —
+  its time of day can be moved. Every report is kept in your own database as the text that was sent, and
+  **Administration shows the last seven days**, so the list on that screen is checkable rather than a promise. The
+  second is the **check for a newer release**, which is **off unless you turn it on**. Both are outbound only, both
+  are made by the background worker, and **nothing in the product waits on either**: a report that cannot be sent is
+  kept, retried the next day, dropped after a week, and never reaches anybody as an error.
 - The **web container holds no Graph permission at all** — not a narrow one, none. Only the background worker
   talks to Graph, and the two run as different identities.
 - **No credential value is ever stored.** For each credential the register keeps its type, name, expiry,

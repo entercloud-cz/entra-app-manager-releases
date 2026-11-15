@@ -6,16 +6,16 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 3.9.0.** It is generated from that release's own guide — an older release's
+- **This page describes 3.10.0.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.9.0`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.10.0`
 
 ---
 
 This is the install path for a deployment **you** run, in **your** Azure subscription, watching **your** Entra
-tenant. EnterCloud's own deployments are operated a different way — through pipelines, with a deploying principal
-you do not have and should not need — and nothing in this guide assumes any of it.
+tenant. EnterCloud's own deployments are installed and upgraded with this same script and this same guide — no
+pipeline deploys them — so nothing here assumes a principal, a workflow or a right you do not have.
 
 Everything here is performed by one script, `install.ps1`, in eight phases. The phases exist because the
 **rights differ** — Azure, Entra, Exchange and the database are four different administrators in most
@@ -268,7 +268,7 @@ subscription before the deployment runs**, and there are two shapes that can tak
 
 **A public reference, which is the ordinary case and needs no credential at all:**
 
-    ghcr.io/entercloud-cz/entra-app-manager:v3.9.0
+    ghcr.io/entercloud-cz/entra-app-manager:v3.10.0
 
 `install.ps1` from a release already points at the version it was published with, so you do not have to pass
 `-Image` at all. The release notes carry the **digest** beside the tag; pass that instead if you would rather pin

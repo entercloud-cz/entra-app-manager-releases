@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 4.0.2.** It is generated from that release's own guide — an older release's
+- **This page describes 4.0.3.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v4.0.2`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v4.0.3`
 
 ---
 
@@ -181,7 +181,10 @@ What it will and will not do, all of it enforced in the deployment rather than p
 
 **A later re-run will not take it away by accident.** An ordinary `./install.ps1` on a deployment that already
 updates itself reads that off the deployment and keeps it — including from a fresh download that has never seen your
-answers file. It says so when it does.
+answers file. It says so when it does. What the deployment offers also outranks the answers file. Only `-SelfUpdate` or
+`-SelfUpdate:$false`, typed on the command line, changes it. Until 4.0.3 the answers file could hold a *no* that
+nobody gave, and an upgrade to 4.0 then switched the control off (#662). If yours lost it, `./install.ps1 -SelfUpdate`
+brings it back.
 
 **You can change your mind in one direction easily.** `./install.ps1 -SelfUpdate` adds it to a deployment that said
 no — the whole command, not `-Only deploy`: the updater needs a database user, and that is created by the migrate job
@@ -293,7 +296,7 @@ subscription before the deployment runs**, and there are two shapes that can tak
 
 **A public reference, which is the ordinary case and needs no credential at all:**
 
-    ghcr.io/entercloud-cz/entra-app-manager:v4.0.2
+    ghcr.io/entercloud-cz/entra-app-manager:v4.0.3
 
 `install.ps1` from a release already points at the version it was published with, so you do not have to pass
 `-Image` at all. The release notes carry the **digest** beside the tag; pass that instead if you would rather pin

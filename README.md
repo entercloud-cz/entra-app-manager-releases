@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 3.10.0.** It is generated from that release's own guide — an older release's
+- **This page describes 4.0.0.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v3.10.0`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v4.0.0`
 
 ---
 
@@ -84,10 +84,31 @@ permissions and Exchange role assignments are a **union**, not nested. An app ho
 a mailbox-scoped assignment can send as anybody — the scope narrows nothing while looking exactly as though it
 does. **The only way to have one mailbox is for the broad permission never to exist.**
 
-**Not requested either, and this is the point:** no `Application.ReadWrite.OwnedBy`, no `Application.ReadWrite.All`,
-nothing that writes. The mode selector inside the product is a promise about behaviour; **the permission grant is
-the boundary.** The install script reports it if the two ever disagree — if this deployment is found holding a
-write permission, it says so at the end of the permissions phase, with what to remove.
+### Self-service adds one write, and only when you choose it
+
+| Permission | Type | What it buys | Refusing it costs |
+|---|---|---|---|
+| `Application.ReadWrite.OwnedBy` | application, **write** | writing to the registrations **this deployment's own identity owns**, and to nothing else: creating a secret at the moment its requester collects it, taking over an application whose owner left, removing a secret that expired. A registration on the protected list is refused **even when this deployment owns it** | requests can be approved but not carried out; the product stays Watch and notify in all but name |
+
+Chosen with `-Mode SelfService`, or by answering the installer's question when you run the `permissions` phase.
+Nothing wider is ever granted by this script: **no `Application.ReadWrite.All`**, which could write to every
+registration in your directory, and no `Mail.Send`. The bound is ownership, and this product cannot make itself an
+owner: bringing a registration under management is your act in Entra, which the product only records.
+
+### One more read, only if you ask for it
+
+| Permission | Type | What it buys | Refusing it costs |
+|---|---|---|---|
+| `AuditLog.Read.All` | application, read | **who** changed a registration, read from Entra's own audit log, where the product otherwise says only **that** it changed (#361, when it ships) | nothing the product needs to work: changes are still detected, just not attributed |
+
+Granted only with `-AuditLog`, in either mode, and never by default or by answering a question. It is remembered, so a
+re-run keeps it; a deployment found holding it without the switch keeps it too, since nothing asked to change that.
+
+**In Watch and notify that write is not requested at all.** The mode selector inside the product is a promise about
+behaviour; **the permission grant is the boundary.** The install script reports it if the two ever disagree: a
+deployment in Watch and notify found holding the write is told so at the end of the permissions phase, with the
+command that removes it. Running the phase again with `-Mode WatchAndNotify` does not remove it by itself, because
+taking a right away is a step you should see, not a side effect.
 
 Two narrower notes worth having in advance:
 
@@ -110,6 +131,7 @@ One resource group, `rg-eam-prod` (the names come from `-Workload` and `-Environ
 | **And, only if you say yes to self-update:** a third identity, a custom role definition, one more queue and a fifth job | see *Letting the deployment update itself* below. Nothing here is created unless you ask for it |
 | Azure SQL — server and one database | the register, the journal, everything recorded. **Entra-only authentication, no password anywhere** |
 | Storage account | the work queues, and the key ring that keeps people signed in across a restart. Shared-key access disabled, so there is no connection string to leak |
+| Key Vault | **empty when installed.** It is where a secret the product must keep will live, the first being the credential for sending mail through SMTP or a provider instead of Microsoft Graph, when that arrives. The worker identity may read secrets in it and nothing more; the web identity has no right on it at all; **nothing the product runs as may write to it**, so a secret goes in only when a person with their own rights puts it there. RBAC authorisation, soft delete and purge protection on, which some Azure Policy requires. A deleted vault keeps its name for a week, so the installer recovers it on a reinstall rather than failing |
 | Container registry | created by the template. It holds the product image when the image has to be copied into your subscription (§3); with an anonymously pullable reference nothing is stored in it |
 | Log Analytics workspace | the container logs |
 
@@ -118,11 +140,14 @@ one web replica. Everything else is small or usage-based. Price them for your re
 calculator before you commit — this document deliberately quotes no figure it cannot keep current.
 
 **One thing is created outside your subscription**: a **security group in your directory**, whose members are the
-only people who can connect to this deployment's database directly. The product's own worker identity is a member,
-which is what lets the deployment create its database users without anybody reaching the server from outside Azure.
-The installer adds nobody else.
+only people who can connect to this deployment's database directly. **Membership makes a member the owner of that
+database** (`dbo`, `db_owner`): it can read and change every row, drop any table and create users. That is true
+whatever narrower database user also exists for them, measured (#467). So add a person to it only when they should own
+the data. The product's own worker identity is a member, which is what lets the deployment apply its schema and create
+its database users without anybody reaching the server from outside Azure; it therefore owns the database too, by
+decision rather than by accident (`0064`). The installer adds nobody else.
 
-**No secret exists in a deployed stamp.** The database, the queues, the key ring and Microsoft Graph are all
+**No secret exists in a deployed stamp** until you put one in the Key Vault yourself. The database, the queues, the key ring and Microsoft Graph are all
 reached with managed identity, and the sign-in registration authenticates with a federated credential rather than
 a client secret. The application refuses to start if a connection string ever arrives with a password in it.
 
@@ -132,8 +157,8 @@ The product tells you when a newer release exists, whichever way you answer this
 **whether it can apply one for you**, or whether applying one means running the installer again.
 
 **Saying no costs you nothing you have not already accepted**: an update is `./install.ps1 -Only upgrade`, run by
-somebody with Contributor on the resource group, and the product prints the exact command on the screen that told
-you about the release. That is the whole of the difference.
+somebody with Contributor on the resource group (Owner for a major release, which deploys the template, §8). The
+product prints the exact command on the screen that told you about the release. That is the whole of the difference.
 
 **Saying yes adds one managed identity, and it is worth understanding what that identity can do.** It holds a
 **custom role definition with four actions** — read and write on this resource group's container apps and jobs —
@@ -187,7 +212,7 @@ carrying a tenant identifier.
 | `signin` | Entra | the same as `registration` |
 | `bootstrap` | Azure | enough to add a group member and start a container app job. **No database access at all** — the work happens inside Azure, done by the product's own migrate job |
 | `permissions` | Entra | **Privileged Role Administrator** or Global Administrator. Granting an application permission is consent, which is a larger right than deploying |
-| `mail` | Exchange Online | **Exchange Administrator**, for the mailbox and the role assignment |
+| *after the install:* `-Mailbox` | Exchange Online and Entra | **Exchange Administrator**, for the role assignment that lets this deployment send as the chosen mailbox. **No Azure subscription is needed** for this one (§5) |
 | `verify` | — | none |
 
 One person holding all of them can run the whole thing in one command. If that person does not exist in your
@@ -268,7 +293,7 @@ subscription before the deployment runs**, and there are two shapes that can tak
 
 **A public reference, which is the ordinary case and needs no credential at all:**
 
-    ghcr.io/entercloud-cz/entra-app-manager:v3.10.0
+    ghcr.io/entercloud-cz/entra-app-manager:v4.0.0
 
 `install.ps1` from a release already points at the version it was published with, so you do not have to pass
 `-Image` at all. The release notes carry the **digest** beside the tag; pass that instead if you would rather pin
@@ -327,11 +352,12 @@ refuses with what is missing rather than proceeding, so a wrong order costs a me
 #    group and starts the product's own migrate job, which creates the database user and applies the schema
 .\install.ps1 -Only bootstrap
 
-# 5. the Privileged Role Administrator — consent
+# 5. the Privileged Role Administrator — consent. Add -Mode SelfService for the one write self-service needs;
+#    without it the installer asks, and the default is Watch and notify
 .\install.ps1 -Only permissions
 
-# 6. the Exchange administrator — in the same sitting as step 5, see §5
-.\install.ps1 -Only mail -NoticeMailbox appmanager@contoso.com
+# The mailbox is NOT an install step any more (#614). It is chosen inside the product after the install, and
+# Administration -> Notifications then shows the Exchange administrator the one command to run (§5).
 
 # 7. anybody
 .\install.ps1 -Only verify
@@ -366,8 +392,8 @@ silently, with every command succeeding.
 | `signin` | reads the hostname off the running app and registers it, asks for the address **people will actually open** and registers that beside it, and creates the federated credential that lets the web app authenticate **without a secret** |
 | `group` | creates the security group that will administer the database, or finds it. Adds nobody but the deployment, and prints the one command that adds a person |
 | `bootstrap` | adds the worker identity to that group, then starts the product's own **migrate job** — which creates the web tier's database user by SID and applies the schema. Reads the job's log back, because that is where the evidence is. **Touches no database and needs no port** |
-| `permissions` | grants the three Graph permissions, then lists anything held **beyond** them |
-| `mail` | checks the mailbox, creates the Exchange scope and the `Application Mail.Send` assignment, and asks Exchange whether the mailbox is inside it |
+| `permissions` | grants the mode's Graph permissions (three for Watch and notify, four for Self-service), then lists anything held **beyond** them with the command that removes it |
+| *(not a phase)* `-Mailbox` | run after the install, from the command Administration → Notifications shows: checks the mailbox, creates or moves the Exchange scope and the `Application Mail.Send` assignment, and asks Exchange whether the mailbox is inside it |
 | `verify` | reads `/healthz` and `/api/schema` off the running deployment and prints what is left for a human |
 
 ### Why the registration comes before the deployment
@@ -419,12 +445,24 @@ empty.
 
 ## 5. Mail — one mailbox, and the assignment that makes it one
 
+**Not part of the install since #614.** The mailbox is a choice the product owns (Administration → Notifications),
+so the installer no longer asks for it. Once it is chosen, that page shows the one command an **Exchange
+Administrator** runs, with both values already filled in:
+
+```powershell
+.\install.ps1 -Mailbox appmanager@contoso.com -WorkerClientId <the worker's client id, as the page shows it>
+```
+
+It runs **only** this step: no install phase runs beside it, and it needs **no Azure subscription**, only `az login`
+into your tenant (`--allow-no-subscriptions` if the account has none) with the Exchange Administrator role. Running
+it again after the mailbox changed **moves** the permission to the new address. What follows is what it does.
+
 Notices go out through Graph as **one shared mailbox**. Three things have to be true, and only one of them is
 visible from inside the product.
 
 ### The mailbox
 
-It has to exist before the install; the script will not create it. That is deliberate: **Exchange overwrites any
+It has to exist before you run the command; the script will not create it. That is deliberate: **Exchange overwrites any
 `From` header the product sets, so what every recipient sees above mail about their credentials is the mailbox's
 own display name.** A mailbox somebody created as "Azure Info" sends every notice as *Azure Info*. Name it after
 the product:
@@ -497,8 +535,8 @@ is worse than plain text. *Yes, the installer asked for an address too, and no, 
 one decides where a sign-in returns to and has to be known before anybody can sign in at all, which is why it lives
 in the deployment and not on this screen. Normally you type the same address in both.*
 
-**4. Administration → Notifications.** Set the sender to your shared mailbox. Set who hears about an application
-nobody claims. Set the three expiry thresholds — informative, warning, critical; an empty one means that notice is
+**4. Administration → Notifications.** Set the sender to your shared mailbox, then hand the command the page shows
+to your Exchange Administrator (§5). Set who hears about an application nobody claims. Set the three expiry thresholds — informative, warning, critical; an empty one means that notice is
 off. Then **send the test mail**, which is what proves §5 end to end. The mailbox is set here rather than in
 configuration on purpose: a setting that needed a redeployment to change would be a setting you had to ask us to
 change for you.
@@ -539,7 +577,7 @@ account.
   cache, so trust it; a test mail from inside the product within the hour may fail on the cache rather than on the
   configuration. Waiting is the fix, not re-running anything.
 - ~~**The Exchange policy can take up to an hour**~~ — the old mechanism's trap, and a fresh policy could answer `Granted` for an address
-  outside it while Exchange catches up. Re-run the mail phase until the outside address reads `Denied`. Do not
+  outside it while Exchange catches up. Re-run the `-Mailbox` command until the outside address reads `Denied`. Do not
   treat the permission as narrowed before then.
 - ~~**A new mail-enabled group is not immediately usable as a policy scope.**~~ There is no group in this any more.
 - **The database's tier and its maximum size are not independent.** Azure SQL Standard accepts only a discrete list
@@ -567,30 +605,56 @@ account.
 
 ## 8. Upgrading, rolling back, removing
 
-**Upgrade — one command, and it is not the install:**
+**Upgrade — one command for every release, and it is not the install:**
 
 ```powershell
 ./install.ps1 -Only upgrade -Image <new reference>
 ```
 
-Four steps and no questions. It points the product's own migrate job at the new image and **runs it** — the plan,
-each migration's declared cost and the backup line are printed before anything is touched — then rolls the web app
-and all three background jobs, then asks the running deployment what it is serving.
+**Run it with the `install.ps1` from the release you are installing**, from the directory you downloaded that release
+into. Administration → System links the release page and shows this command with your deployment's values, including
+`-EnvironmentName` where it is not `prod`. The script refuses an image from another release, so an older copy cannot
+be used by mistake. It decides what the release needs, and says which path it took and why
+([`0080`](../docs/decisions/0080-a-major-upgrade-is-the-same-command-and-the-script-decides.md)).
 
-- **The schema moves before the application, and that order is the point.** The web tier refuses to serve a schema
-  behind its build, so the other way round means a deployment that stops serving until the migration lands.
+**A release that keeps the major version is rolled.** That is four steps and no questions:
+
+1. It points the product's own migrate job at the new image and **runs it**. The plan, each migration's declared cost
+   and the backup line are printed before anything is touched.
+2. It rolls the web app and every background job.
+3. It asks the running deployment what it is serving.
+
+**A major release deploys the template**, because a major changes the deployment itself (a new resource, a new
+identity, a new role assignment). The same command does this too:
+
+- **It runs the install's own phases with the new image:** `deploy`, `bootstrap` (which applies the schema and creates
+  the database user of any identity the template just made), `permissions` and `verify`.
+- **It also takes this path when it cannot prove a roll is enough:** a version it cannot read, or a workload the new
+  image runs that your deployment does not have yet.
+- **It needs a larger right: Owner, or Contributor with User Access Administrator**, on the subscription. The template
+  creates role assignments. The script says so before it starts, and the panel says so before you download anything.
+- **It needs the template beside the script.** That is why you download the whole release, not the script alone. A
+  copy of the script on its own is refused before anything changes.
+- **A permission the release needs and you cannot grant** is reported with the command for a Privileged Role
+  Administrator, rather than stopping the upgrade halfway.
+- **For the minutes the schema takes, the web app serves its upgrade screen.** The new code meets the old schema
+  briefly, which is the order a first install runs, and the jobs wait.
+
+**Either path asks nothing your deployment already answers.** The region, the database's size and its administrator
+group, the address people open, whether it updates itself and its mode are read off what is running, so an upgrade
+cannot move your stamp to another region, scale your database back down, or hand its administration to whoever runs
+the upgrade. A value you type on the command line still wins. The rule binds every template deployment, so a plain
+re-run or `-Only deploy` keeps the same values.
+
+- **The schema moves before the application on a roll, and that order is the point.** The web tier refuses to serve a
+  schema behind its build, so the other way round means a deployment that stops serving until the migration lands.
 - **`-WhatIf` walks the whole thing and changes nothing.** Worth doing first on a deployment people are using.
 - **It refuses to be an install.** Pointed at a deployment that does not exist, it says so and stops.
-- **It asks nothing you have already answered.** The region, the group, the registration and the mailbox are
-  already true; an upgrade reads them rather than defaulting them, so it cannot move your stamp to another region or
-  hand your database's administration to whoever is running the upgrade.
-- **Every workload that runs the image is rolled together.** One left behind runs the previous release's code
-  against the new schema. That includes the updater job, on a deployment that has one — it is asked about rather
-  than assumed, so this command works the same on a deployment that never had self-update.
-- **What it cannot do is change the deployment itself.** An upgrade rolls an image; it does not deploy a template, so
-  it cannot add or change a setting the deployment holds. A release whose notes are marked *action required* is
-  telling you there is a step this command does not contain; one that is not so marked can be taken as it comes, and
-  anything new it offers that needs a setting is offered rather than required.
+- **Every workload that runs the image moves together.** One left behind runs the previous release's code against the
+  new schema. That includes the updater job, on a deployment that has one. It is asked about rather than assumed, so
+  this command works the same on a deployment that never had self-update.
+- **A release whose notes are marked *action required* tells you what else it asks of you.** That is usually something
+  inside the product, or a consent the command reports. The command itself is the same either way.
 
 **Or, on a deployment that updates itself, press the button** (§1, *Letting the deployment update itself*). It does
 the same roll and adds the two things a person at a keyboard would otherwise do: it watches the new version come up
@@ -598,8 +662,8 @@ and puts the previous image back if it does not. Two differences are worth knowi
 
 - **It does not migrate**, so a release that changes the database leaves the upgrade screen waiting — which is the
   same screen the command above would have left you if you had rolled the image by hand.
-- **It refuses a major release.** A major version means the upgrade needs a step outside the product, so the panel
-  hands you the command instead. The command is the path for those, always.
+- **It refuses a major release.** A major version changes the deployment itself, which the updater has no right to do
+  (`0067`), so the panel hands you the command above instead. That command performs the major, template included.
 - **There are no down migrations.** Take a backup you would be willing to restore. The command says so before it
   applies anything.
 

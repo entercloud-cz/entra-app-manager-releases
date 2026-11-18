@@ -6,10 +6,10 @@ the renewal, instead of discovering it when an application has already stopped w
 
 **This repository holds releases and nothing else.** The product's source is not here.
 
-- **This page describes 4.0.3.** It is generated from that release's own guide — an older release's
+- **This page describes 4.1.0.** It is generated from that release's own guide — an older release's
   page is the `INSTALL.md` attached to it.
 - **Every release:** <https://github.com/entercloud-cz/entra-app-manager-releases/releases>
-- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v4.0.3`
+- **The image:** `ghcr.io/entercloud-cz/entra-app-manager:v4.1.0`
 
 ---
 
@@ -94,6 +94,13 @@ Chosen with `-Mode SelfService`, or by answering the installer's question when y
 Nothing wider is ever granted by this script: **no `Application.ReadWrite.All`**, which could write to every
 registration in your directory, and no `Mail.Send`. The bound is ownership, and this product cannot make itself an
 owner: bringing a registration under management is your act in Entra, which the product only records.
+
+**A new grant reaches a running deployment late, by up to about a day.** The worker authenticates as a managed
+identity, and its token is cached with the roles it was issued with until it expires. Nobody can force a refresh.
+So a grant made today works once that token expires, not when the phase finishes. Production met this on 2026-11-16:
+the write was granted at 18:26 UTC and still refused at 18:29 (#655). **Administration → Application mode** says when
+the mode and the grant disagree, and while a grant is waiting it gives the time it takes effect. A requester whose
+collection is refused for this reason is told so, and the approval stands, so they can collect again later.
 
 ### One more read, only if you ask for it
 
@@ -264,14 +271,15 @@ Everything you need is attached to one release:
 |---|---|
 | `install.ps1` | the installer this guide is about. Already pointed at the image of the release it came from |
 | `mainTemplate.json` | the deployment itself, compiled from the product's infrastructure code by the release run — so nothing has to be installed to read or deploy it |
+| `container-settings.json` | the sizes, replica counts and timeouts this release's containers need, written by the release run from that template. An upgrade that rolls applies them with the new image |
 | `INSTALL.md` | this guide, as it stood for **that** version |
 | `NOTES.md` | what the release changes, whether it migrates the schema and what that costs |
-| `SHA256SUMS` | checksums for the four above |
+| `SHA256SUMS` | checksums for the five above |
 
 ```powershell
 # in an empty directory
 $release = "https://github.com/entercloud-cz/entra-app-manager-releases/releases/latest/download"
-foreach ($file in 'install.ps1', 'mainTemplate.json', 'INSTALL.md', 'NOTES.md', 'SHA256SUMS') {
+foreach ($file in 'install.ps1', 'mainTemplate.json', 'container-settings.json', 'INSTALL.md', 'NOTES.md', 'SHA256SUMS') {
     Invoke-WebRequest "$release/$file" -OutFile $file
 }
 
@@ -296,7 +304,7 @@ subscription before the deployment runs**, and there are two shapes that can tak
 
 **A public reference, which is the ordinary case and needs no credential at all:**
 
-    ghcr.io/entercloud-cz/entra-app-manager:v4.0.3
+    ghcr.io/entercloud-cz/entra-app-manager:v4.1.0
 
 `install.ps1` from a release already points at the version it was published with, so you do not have to pass
 `-Image` at all. The release notes carry the **digest** beside the tag; pass that instead if you would rather pin
@@ -576,6 +584,10 @@ account.
 - **A resource provider that is not registered fails the deployment** with `MissingSubscriptionRegistration`, which
   names the namespace and not the remedy. The preflight phase registers them; registration itself can take a few
   minutes to complete in the background.
+- **A new Graph permission is cached for up to about 24 hours.** The worker's managed identity keeps using the token
+  it already holds, with the roles it was issued with, until that token expires, and the refresh cannot be forced. So
+  `-Mode SelfService` on a running deployment takes effect hours later, not when the phase ends. Administration →
+  Application mode gives the time it takes effect. Waiting is the fix: running the phase again changes nothing.
 - **An Exchange permission change is cached for 30 minutes to 2 hours.** The script's own check bypasses that
   cache, so trust it; a test mail from inside the product within the hour may fail on the cache rather than on the
   configuration. Waiting is the fix, not re-running anything.
@@ -624,7 +636,11 @@ be used by mistake. It decides what the release needs, and says which path it to
 
 1. It points the product's own migrate job at the new image and **runs it**. The plan, each migration's declared cost
    and the backup line are printed before anything is touched.
-2. It rolls the web app and every background job.
+2. It rolls the web app and every background job, **with the container settings the release declares**: CPU and
+   memory, the web app's replica range, a job's timeout and how often a queue is looked at. They are in
+   `container-settings.json` beside the script, and they go in the same `az` call as the new image, so a release that
+   needs more memory never runs a minute without it. A value you changed by hand in Azure is put back to the release's,
+   as a template deployment would.
 3. It asks the running deployment what it is serving.
 
 **A major release deploys the template**, because a major changes the deployment itself (a new resource, a new
@@ -665,6 +681,9 @@ and puts the previous image back if it does not. Two differences are worth knowi
 
 - **It does not migrate**, so a release that changes the database leaves the upgrade screen waiting — which is the
   same screen the command above would have left you if you had rolled the image by hand.
+- **It applies the same container settings as the command**, read off the release's own image, and puts the old ones
+  back with the old image if the new version does not come up. A release declaring a setting it cannot apply is
+  refused before anything changes, and the panel shows the command instead.
 - **It refuses a major release.** A major version changes the deployment itself, which the updater has no right to do
   (`0067`), so the panel hands you the command above instead. That command performs the major, template included.
 - **There are no down migrations.** Take a backup you would be willing to restore. The command says so before it
